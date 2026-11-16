@@ -47,8 +47,8 @@
 </section>
 
 <section id="imp" class="hidden">
-<div class="top"><div><h1>Importar Excel</h1><div class="sub">Reemplaza la base de productos si necesitas cargar otro inventario.</div></div></div>
-<div class="panel import"><div class="notice" style="margin-bottom:12px">☁️ Los conteos del celular se guardan en tu Google Sheets “Conteos Inventario”.</div><button onclick="resetInventory()" style="margin-bottom:12px;padding:10px 14px;border:0;border-radius:9px;background:#157a63;color:#fff;cursor:pointer">Reiniciar conteo a 0</button><br><input type="file" id="file" accept=".xlsx,.xls,.csv"><div id="msg"></div><p style="color:#687b75">La app reconoce Item, Desc. item, U.M., Existencia, CONTEO y Bodega.</p></div>
+<div class="top"><div><h1>Importar Excel</h1><div class="sub">Agrega productos nuevos y completa descripciones y unidades sin borrar los productos ni sus conteos.</div></div></div>
+<div class="panel import"><div class="notice" style="margin-bottom:12px">☁️ Los conteos del celular se guardan en tu Google Sheets “Conteos Inventario”.</div><button onclick="resetInventory()" style="margin-bottom:12px;padding:10px 14px;border:0;border-radius:9px;background:#157a63;color:#fff;cursor:pointer">Reiniciar conteo a 0</button><br><input type="file" id="file" accept=".xlsx,.xls,.csv"><div id="msg"></div><p style="color:#687b75">La app reconoce Referencia/ITEM, Desc. item/Descripción y U.M. Los productos existentes y sus conteos se conservan; los nuevos se agregan.</p></div>
 </section>
 </main></div>
 
@@ -83,6 +83,66 @@ function render(){
  list.innerHTML=a.map(p=>{
  return `<div class="card"><div class="ico">□</div><div class="info"><div class="item">${esc(p.item)}</div><div class="desc">${esc(p.desc)}</div><div class="meta">U.M. ${esc(p.um)} · Bodega ${esc(p.bodega)}</div></div><div class="actions"><div><label>CONTEO</label><input id="c_${p.id}" type="number" min="0" step="1" value="${p.count}" ${p.counted?'disabled':''}></div><button class="save" onclick="save('${p.id}')" ${p.counted?'disabled':''}>${p.counted?'✓ Guardado':'Guardar'}</button></div></div>`}).join('');
 }
+// Importación acumulativa: conserva los productos y conteos existentes.
+function cleanHeader(v){return norm(v).replace(/[._-]/g,' ').replace(/\s+/g,' ').trim();}
+function cellText(v){return v===null||v===undefined?'':String(v).trim();}
+function importExcelFile(file){
+ const msg=document.getElementById('msg');
+ if(!file){return;}
+ const reader=new FileReader();
+ reader.onload=function(e){
+  try{
+   const wb=XLSX.read(e.target.result,{type:'array'});
+   const ws=wb.Sheets[wb.SheetNames[0]];
+   if(!ws) throw new Error('El archivo no contiene una hoja válida.');
+   const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false});
+   if(!rows.length) throw new Error('El Excel está vacío.');
+   const headers=rows[0].map(cleanHeader);
+   const findCol=(names)=>headers.findIndex(h=>names.includes(h));
+   const iItem=findCol(['item','referencia','codigo','codigo producto','cod producto']);
+   const iDesc=findCol(['desc item','descripcion','descripcion item','producto','nombre producto']);
+   const iUm=findCol(['u m','um','unidad medida','unidad de medida']);
+   if(iItem<0||iDesc<0) throw new Error('No encuentro las columnas Referencia/ITEM y Desc. item/Descripción. Revisa los encabezados.');
+   if(iUm<0) throw new Error('No encuentro la columna U.M. o Unidad de medida.');
+   const byItem=new Map(state.products.map(p=>[String(p.item).trim(),p]));
+   let added=0,updated=0,unitsFilled=0,invalid=0;
+   const seen=new Set();
+   rows.slice(1).forEach((r,n)=>{
+    const item=cellText(r[iItem]);
+    if(!item||seen.has(item)) return;
+    seen.add(item);
+    const desc=cellText(r[iDesc]);
+    const um=cellText(r[iUm]);
+    if(!desc){invalid++;return;}
+    const existing=byItem.get(item);
+    if(existing){
+     let changed=false;
+     if(desc && existing.desc!==desc){existing.desc=desc;changed=true;}
+     if(um && existing.um!==um){if(!existing.um)unitsFilled++;existing.um=um;changed=true;}
+     if(changed) updated++;
+    }else{
+     const product={id:'imp_'+Date.now().toString(36)+'_'+(added+1),bodega:'BD341',tipo:'',item,desc,um,existencia:0,count:0,counted:false,employee:'',time:''};
+     state.products.push(product);byItem.set(item,product);added++;
+    }
+   });
+   persist();render();
+   const missingUm=state.products.filter(p=>!cellText(p.um)).length;
+   const report=`Importación completada. Productos agregados: ${added}. Productos actualizados: ${updated}. Unidades completadas: ${unitsFilled}. Productos que aún no tienen U.M.: ${missingUm}.`;
+   msg.className='notice';msg.textContent=report;
+   setExcelStatus(report,true);
+   document.getElementById('file').value='';
+  }catch(err){msg.className='notice';msg.textContent='No se pudo importar: '+err.message;}
+ };
+ reader.onerror=()=>{msg.textContent='No se pudo leer el archivo.';};
+ reader.readAsArrayBuffer(file);
+}
+document.getElementById('file').addEventListener('change',function(){
+ const f=this.files&&this.files[0];
+ if(!f)return;
+ if(!confirm('Se conservarán los productos y conteos actuales. Se agregarán los nuevos y se actualizarán descripción y U.M. cuando el Excel tenga esos datos. ¿Continuar?')){this.value='';return;}
+ importExcelFile(f);
+});
+
 function resetInventory(){
  if(confirm('¿Quieres poner todos los conteos en 0 y marcar todos los productos como pendientes?')){
    state.products.forEach(p=>{p.count=0;p.counted=false;p.employee='';p.time='';});
